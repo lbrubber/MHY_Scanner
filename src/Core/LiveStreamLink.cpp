@@ -106,7 +106,13 @@ std::string LiveBili::GetLinkByRealRoomID(const std::string& realRoomID)
 
 std::string LiveBili::GetStreamUrl(const cpr::Parameters param)
 {
-    auto r = cpr::Get(cpr::Url{ api::live::bili::v2_play_info }, param);
+    const cpr::Header headers = {
+        { "referer", "https://live.bilibili.com/" },
+        { "user-agent",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" }
+    };
+    auto r = cpr::Get(cpr::Url{ api::live::bili::v2_play_info }, param, headers);
     if (r.error || r.status_code != 200 || r.text.empty())
     {
         return "";
@@ -118,18 +124,62 @@ std::string LiveBili::GetStreamUrl(const cpr::Parameters param)
         {
             return "";
         }
+        if (!playInfo.contains("code") || playInfo["code"].get<int>() != 0)
+        {
+            return "";
+        }
         const auto& data = playInfo["data"];
-        const auto& playurl_info = data["playurl_info"];
-        const auto& playurl = playurl_info["playurl"];
-        const auto& stream = playurl["stream"][0];
-        const auto& format = stream["format"][0];
-        const auto& codec = format["codec"][0];
+        if (data.contains("playurl_info") && data["playurl_info"].contains("playurl"))
+        {
+            const auto& playurl = data["playurl_info"]["playurl"];
+            if (playurl.contains("stream") && playurl["stream"].is_array())
+            {
+                for (const auto& stream : playurl["stream"])
+                {
+                    if (!stream.contains("format") || !stream["format"].is_array())
+                    {
+                        continue;
+                    }
+                    for (const auto& format : stream["format"])
+                    {
+                        if (!format.contains("codec") || !format["codec"].is_array())
+                        {
+                            continue;
+                        }
+                        for (const auto& codec : format["codec"])
+                        {
+                            const std::string base_url = codec.value("base_url", "");
+                            if (base_url.empty())
+                            {
+                                continue;
+                            }
 
-        std::string base_url = codec["base_url"].get<std::string>();
-        std::string extra = codec["url_info"][0]["extra"].get<std::string>();
-        std::string host = codec["url_info"][0]["host"].get<std::string>();
+                            if (codec.contains("url_info") && codec["url_info"].is_array())
+                            {
+                                for (const auto& url_info : codec["url_info"])
+                                {
+                                    const std::string host = url_info.value("host", "");
+                                    const std::string extra = url_info.value("extra", "");
+                                    if (!host.empty())
+                                    {
+                                        return host + base_url + extra;
+                                    }
+                                }
+                            }
+                            return base_url;
+                        }
+                    }
+                }
+            }
+        }
 
-        return host + base_url + extra;
+        // 兼容旧字段，部分场景返回 durl
+        if (data.contains("durl") && data["durl"].is_array() && !data["durl"].empty())
+        {
+            return data["durl"][0].value("url", "");
+        }
+
+        return "";
     }
     catch (const nlohmann::json::exception& e)
     {
